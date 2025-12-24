@@ -1,5 +1,5 @@
 # Task 1 – Design Explanation  
-**Powerplay AI Engineering Intern Assignment**
+
 
 ---
 
