@@ -115,6 +115,8 @@ OUTPUT (JSON only, no markdown):"""
         Returns:
             Validated dictionary matching schema
         """
+        last_error = None
+        
         for attempt in range(max_retries):
             try:
                 # Call Groq LLM with low temperature for consistency
@@ -123,7 +125,7 @@ OUTPUT (JSON only, no markdown):"""
                     messages=[
                         {
                             "role": "system", 
-                            "content": "You are a precise JSON generator for construction orders. Return only valid JSON, no markdown."
+                            "content": "You are a precise JSON generator for construction orders. Return ONLY valid JSON with no markdown, no explanations, no extra text. Ensure all strings are properly closed with quotes."
                         },
                         {
                             "role": "user", 
@@ -140,6 +142,10 @@ OUTPUT (JSON only, no markdown):"""
                 # Clean markdown formatting if present
                 content = self.clean_json_response(content)
                 
+                # Additional validation: check if JSON looks complete
+                if not content.endswith('}'):
+                    content = content + '}'
+                
                 # Parse JSON
                 parsed = json.loads(content)
                 
@@ -149,17 +155,28 @@ OUTPUT (JSON only, no markdown):"""
                 return validated
                 
             except json.JSONDecodeError as e:
+                last_error = str(e)
                 print(f"Attempt {attempt + 1}/{max_retries}: JSON decode error - {e}")
-                if attempt == max_retries - 1:
+                
+                if attempt < max_retries - 1:
+                    # Try with higher temperature for variety
+                    continue
+                else:
                     # Last resort: try to extract JSON manually
-                    return self.emergency_json_extraction(content, text)
+                    try:
+                        return self.emergency_json_extraction(content, text)
+                    except:
+                        pass
                     
             except Exception as e:
+                last_error = str(e)
                 print(f"Attempt {attempt + 1}/{max_retries}: Error - {e}")
-                if attempt == max_retries - 1:
-                    return self.create_fallback_response(text)
+                
+                if attempt < max_retries - 1:
+                    continue
         
-        # Should not reach here, but safety fallback
+        # All attempts failed - return fallback
+        print(f"All parsing attempts failed. Last error: {last_error}")
         return self.create_fallback_response(text)
     
     def clean_json_response(self, content: str) -> str:
@@ -276,7 +293,7 @@ OUTPUT (JSON only, no markdown):"""
     
     def emergency_json_extraction(self, content: str, original_text: str) -> Dict[str, Any]:
         """
-        Last resort: extract JSON from malformed response using regex.
+        Last resort: extract JSON from malformed response using multiple strategies.
         
         Args:
             content: Malformed response
@@ -285,17 +302,54 @@ OUTPUT (JSON only, no markdown):"""
         Returns:
             Best-effort parsed dictionary
         """
-        try:
-            # Try to find JSON object in response
-            match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
-            if match:
-                json_str = match.group(0)
-                parsed = json.loads(json_str)
-                return self.validate_and_fix(parsed)
-        except Exception as e:
-            print(f"Emergency extraction failed: {e}")
+        print("  Attempting emergency JSON extraction...")
         
+        strategies = [
+            # Strategy 1: Find JSON object with nested braces
+            lambda c: re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', c, re.DOTALL),
+            
+            # Strategy 2: Find anything between first { and last }
+            lambda c: re.search(r'\{.*\}', c, re.DOTALL),
+            
+            # Strategy 3: Try to fix unterminated strings by adding closing quote and brace
+            lambda c: self._fix_unterminated_json(c)
+        ]
+        
+        for i, strategy in enumerate(strategies, 1):
+            try:
+                result = strategy(content)
+                if result:
+                    if isinstance(result, str):
+                        json_str = result
+                    else:
+                        json_str = result.group(0)
+                    
+                    # Try to parse
+                    parsed = json.loads(json_str)
+                    print(f"  ✓ Strategy {i} succeeded")
+                    return self.validate_and_fix(parsed)
+                    
+            except Exception as e:
+                print(f"  Strategy {i} failed: {e}")
+                continue
+        
+        # All strategies failed
+        print("  All extraction strategies failed")
         return self.create_fallback_response(original_text)
+    
+    def _fix_unterminated_json(self, content: str) -> str:
+        """Try to fix unterminated JSON strings"""
+        # If it ends with an unterminated string, try to close it
+        if content.count('"') % 2 != 0:
+            content = content + '"'
+        
+        # If missing closing brace
+        open_braces = content.count('{')
+        close_braces = content.count('}')
+        if open_braces > close_braces:
+            content = content + '}' * (open_braces - close_braces)
+        
+        return content
     
     def create_fallback_response(self, text: str) -> Dict[str, Any]:
         """
