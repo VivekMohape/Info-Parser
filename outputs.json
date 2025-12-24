@@ -1,0 +1,122 @@
+[
+  {
+    "input": "Create 25mm steel bars, 120 units for Project Phoenix, required before 15th March",
+    "output": {
+      "material_name": "25mm steel bars",
+      "quantity": 120,
+      "unit": "units",
+      "project_name": "Project Phoenix",
+      "location": null,
+      "urgency": "medium",
+      "deadline": "2025-03-15"
+    }
+  },
+  {
+    "input": "Need 350 bags of Ultratech Cement 50kg for the site Mumbai-West urgently in 7 days",
+    "output": {
+      "material_name": "Ultratech Cement 50kg",
+      "quantity": 350,
+      "unit": "bags",
+      "project_name": null,
+      "location": "Mumbai-West",
+      "urgency": "high",
+      "deadline": null
+    }
+  },
+  {
+    "input": "Order 12 truckloads of river sand for Bangalore Metro Phase 2 by April end",
+    "output": {
+      "material_name": "river sand",
+      "quantity": 12,
+      "unit": "truckloads",
+      "project_name": "Bangalore Metro Phase 2",
+      "location": null,
+      "urgency": "low",
+      "deadline": "2025-04-30"
+    }
+  },
+  {
+    "input": "get me 500 bags cement asap for highway project",
+    "output": {
+      "material_name": "cement",
+      "quantity": 500,
+      "unit": "bags",
+      "project_name": "highway project",
+      "location": null,
+      "urgency": "high",
+      "deadline": null
+    }
+  },
+  {
+    "input": "need rebar 10mm urgently",
+    "output": {
+      "material_name": "rebar 10mm",
+      "quantity": null,
+      "unit": null,
+      "project_name": null,
+      "location": null,
+      "urgency": "high",
+      "deadline": null
+    }
+  },
+  {
+    "input": "Order 25 tons of aggregates for construction site in Pune",
+    "output": {
+      "material_name": "aggregates",
+      "quantity": 25,
+      "unit": "tons",
+      "project_name": null,
+      "location": "Pune",
+      "urgency": "low",
+      "deadline": null
+    }
+  },
+  {
+    "input": "steel bars 12mm 200 pcs needed by next friday for Tower B",
+    "output": {
+      "material_name": "steel bars 12mm",
+      "quantity": 200,
+      "unit": "pcs",
+      "project_name": "Tower B",
+      "location": null,
+      "urgency": "medium",
+      "deadline": null
+    }
+  },
+  {
+    "input": "Get me M-sand 10 truck ASAP for dlf project in gurgaon!!!",
+    "output": {
+      "material_name": "M-sand",
+      "quantity": 10,
+      "unit": "truck",
+      "project_name": "dlf project",
+      "location": "Gurgaon",
+      "urgency": "high",
+      "deadline": null
+    }
+  },
+  {
+    "input": "need ultratech cement 43 grade 1000 bags within 2 weeks for metro station construction",
+    "output": {
+      "material_name": "Ultratech cement 43 grade",
+      "quantity": 1000,
+      "unit": "bags",
+      "project_name": "metro station construction",
+      "location": null,
+      "urgency": "medium",
+      "deadline": null
+    }
+  },
+  {
+    "input": "order tmt bars, around 5 tons, project alpha, not very urgent",
+    "output": {
+      "material_name": "TMT bars",
+      "quantity": 5,
+      "unit": "tons",
+      "project_name": "project alpha",
+      "location": null,
+      "urgency": "low",
+      "deadline": null
+    }
+  }
+]
