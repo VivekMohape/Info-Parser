@@ -1,27 +1,26 @@
 import json
 import re
+import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-import os
 
 try:
     from groq import Groq
 except ImportError:
-    print("ERROR: Groq library not installed")
-    print("Install with: pip install groq")
-    exit(1)
+    raise ImportError("Install Groq: pip install groq")
 
 
 class MaterialRequestParser:
     """
-    LLM-based parser for converting unstructured construction material
-    requests into structured JSON format using Groq API.
+    Robust LLM-based parser for construction material requests.
+    Guaranteed to never throw `Extra data` JSON errors.
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, api_key: Optional[str] = None,
+                 model: str = "llama-3.3-70b-versatile"):
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         if not self.api_key:
-            raise ValueError("Groq API key not found")
+            raise ValueError("GROQ_API_KEY not set")
 
         self.client = Groq(api_key=self.api_key)
         self.model = model
@@ -31,13 +30,15 @@ class MaterialRequestParser:
         today = datetime.now().strftime("%Y-%m-%d")
         return f"""
 You are a construction material order parser.
-Return ONLY valid JSON. No markdown. No extra text.
+
+Return ONLY a valid JSON object.
+No markdown. No explanation. No extra text.
 
 Schema:
 {{
   "material_name": string,
-  "quantity": number,
-  "unit": string,
+  "quantity": number | null,
+  "unit": string | null,
   "project_name": string | null,
   "location": string | null,
   "urgency": "low" | "medium" | "high",
@@ -45,20 +46,18 @@ Schema:
 }}
 
 Rules:
-- Use null for missing values
+- Use null if information is missing
 - Dates must be YYYY-MM-DD
 - Do not hallucinate
 
-Today: {today}
+Today is {today}
 
-Text:
+Input:
 {text}
 """
 
-    # ---------------- PARSER ----------------
+    # ---------------- MAIN PARSER ----------------
     def parse_text(self, text: str, max_retries: int = 3) -> Dict[str, Any]:
-        last_error = None
-
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -66,7 +65,7 @@ Text:
                     messages=[
                         {
                             "role": "system",
-                            "content": "Return ONLY valid JSON. No markdown. No explanations."
+                            "content": "Return ONLY valid JSON. Do not add text."
                         },
                         {
                             "role": "user",
@@ -77,52 +76,49 @@ Text:
                     max_tokens=300
                 )
 
-                raw = response.choices[0].message.content.strip()
-                json_str = self.clean_json_response(raw)
+                raw_output = response.choices[0].message.content
+                parsed_dict = self.extract_json_object(raw_output)
 
-                parsed = json.loads(json_str)
-                return self.validate_and_fix(parsed)
+                return self.validate_and_fix(parsed_dict)
 
             except Exception as e:
-                last_error = str(e)
                 print(f"Attempt {attempt + 1} failed: {e}")
 
-        print("All attempts failed")
         return self.create_fallback_response(text)
 
-    # ---------------- JSON CLEANER (FIXED) ----------------
-    def clean_json_response(self, content: str) -> str:
+    # ---------------- JSON EXTRACTION (CRITICAL FIX) ----------------
+    def extract_json_object(self, content: str) -> Dict[str, Any]:
         """
-        Safely extract the FIRST valid JSON object from LLM output.
-        Fixes 'Extra data' JSON errors.
+        Extracts the FIRST valid JSON object and returns a dict.
+        This permanently fixes `Extra data` errors.
         """
 
-        # Remove markdown fences
+        # Remove markdown fences if present
         content = re.sub(r"```json", "", content, flags=re.IGNORECASE)
         content = re.sub(r"```", "", content)
         content = content.strip()
 
-        # ✅ Proper JSON extraction
         decoder = json.JSONDecoder()
+
         try:
             obj, _ = decoder.raw_decode(content)
-            return json.dumps(obj)
+            return obj
         except json.JSONDecodeError:
             pass
 
-        # Fallback regex extraction
+        # Regex fallback (last resort)
         match = re.search(r"\{[\s\S]*?\}", content)
         if match:
-            return match.group(0)
+            return json.loads(match.group(0))
 
-        raise ValueError("No valid JSON found in response")
+        raise ValueError("No valid JSON found")
 
     # ---------------- VALIDATION ----------------
     def validate_and_fix(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        def clean(val):
-            if val in [None, "", "null", "None", "N/A"]:
+        def clean(v):
+            if v in [None, "", "null", "None", "N/A"]:
                 return None
-            return str(val).strip()
+            return str(v).strip()
 
         result = {}
 
@@ -131,7 +127,7 @@ Text:
         try:
             q = data.get("quantity")
             result["quantity"] = int(float(q)) if q is not None else None
-        except:
+        except Exception:
             result["quantity"] = None
 
         result["unit"] = clean(data.get("unit"))
@@ -145,13 +141,13 @@ Text:
 
         return result
 
-    def validate_date(self, value) -> Optional[str]:
+    def validate_date(self, value: Any) -> Optional[str]:
         if not value:
             return None
         try:
-            d = datetime.fromisoformat(str(value).replace("Z", ""))
-            return d.strftime("%Y-%m-%d")
-        except:
+            parsed = datetime.fromisoformat(str(value).replace("Z", ""))
+            return parsed.strftime("%Y-%m-%d")
+        except Exception:
             return None
 
     # ---------------- FALLBACK ----------------
@@ -171,21 +167,27 @@ Text:
         results = []
 
         with open(input_file, "r", encoding="utf-8") as f:
-            inputs = [l.strip() for l in f if l.strip()]
+            lines = [l.strip() for l in f if l.strip()]
 
-        for text in inputs:
+        for text in lines:
             result = self.parse_text(text)
-            results.append({"input": text, "output": result})
+            results.append({
+                "input": text,
+                "output": result
+            })
 
         with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2)
+            json.dump(results, f, indent=2, ensure_ascii=False)
 
         return results
 
 
+# ---------------- ENTRY ----------------
 def main():
-    parser = MaterialRequestParser(model="llama-3.3-70b-versatile")
+    print("Material Request Parser (Groq)")
+    parser = MaterialRequestParser()
     parser.process_batch("test_inputs.txt", "outputs.json")
+    print("Done. Results saved to outputs.json")
 
 
 if __name__ == "__main__":
