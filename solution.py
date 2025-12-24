@@ -2,7 +2,7 @@ import json
 import re
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 
 try:
     from groq import Groq
@@ -12,8 +12,10 @@ except ImportError:
 
 class MaterialRequestParser:
     """
-    Robust LLM-based parser for construction material requests.
-    Guaranteed to never throw `Extra data` JSON errors.
+    Auto-detecting LLM-based parser.
+    Supports:
+    - Single request → JSON object
+    - Multiple requests → JSON array
     """
 
     def __init__(self, api_key: Optional[str] = None,
@@ -25,13 +27,21 @@ class MaterialRequestParser:
         self.client = Groq(api_key=self.api_key)
         self.model = model
 
-    # ---------------- PROMPT ----------------
-    def create_prompt(self, text: str) -> str:
+    # ---------------- AUTO-DETECTION ----------------
+    def split_requests(self, text: str) -> List[str]:
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        return lines
+
+    def is_batch_input(self, text: str) -> bool:
+        return len(self.split_requests(text)) > 1
+
+    # ---------------- PROMPTS ----------------
+    def create_single_prompt(self, text: str) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
         return f"""
 You are a construction material order parser.
 
-Return ONLY a valid JSON object.
+Return ONLY one valid JSON object.
 No markdown. No explanation. No extra text.
 
 Schema:
@@ -46,72 +56,107 @@ Schema:
 }}
 
 Rules:
-- Use null if information is missing
+- Use null if missing
 - Dates must be YYYY-MM-DD
 - Do not hallucinate
 
-Today is {today}
+Today: {today}
 
 Input:
 {text}
 """
 
-    # ---------------- MAIN PARSER ----------------
-    def parse_text(self, text: str, max_retries: int = 3) -> Dict[str, Any]:
-        for attempt in range(max_retries):
+    def create_batch_prompt(self, requests: List[str]) -> str:
+        today = datetime.now().strftime("%Y-%m-%d")
+        numbered = "\n".join(f"{i+1}. {r}" for i, r in enumerate(requests))
+
+        return f"""
+You are a construction material order parser.
+
+Return a VALID JSON ARRAY.
+Each array element corresponds EXACTLY to one input line.
+Array length must be {len(requests)}.
+
+No markdown. No explanation. No extra text.
+
+Schema for EACH element:
+{{
+  "material_name": string,
+  "quantity": number | null,
+  "unit": string | null,
+  "project_name": string | null,
+  "location": string | null,
+  "urgency": "low" | "medium" | "high",
+  "deadline": string | null
+}}
+
+Rules:
+- Preserve input order
+- Use null if missing
+- Dates must be YYYY-MM-DD
+- Do not hallucinate
+
+Today: {today}
+
+Inputs:
+{numbered}
+"""
+
+    # ---------------- PUBLIC ENTRY ----------------
+    def parse(self, text: str) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+        if self.is_batch_input(text):
+            return self.parse_batch_text(text)
+        return self.parse_single_text(text)
+
+    # ---------------- SINGLE ----------------
+    def parse_single_text(self, text: str) -> Dict[str, Any]:
+        raw = self.call_llm(self.create_single_prompt(text))
+        obj = self.extract_json(raw)
+        return self.validate_and_fix(obj)
+
+    # ---------------- BATCH ----------------
+    def parse_batch_text(self, text: str) -> List[Dict[str, Any]]:
+        requests = self.split_requests(text)
+        raw = self.call_llm(self.create_batch_prompt(requests))
+        arr = self.extract_json(raw, expect_array=True)
+
+        results = []
+        for i, item in enumerate(arr):
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Return ONLY valid JSON. Do not add text."
-                        },
-                        {
-                            "role": "user",
-                            "content": self.create_prompt(text)
-                        }
-                    ],
-                    temperature=0.1,
-                    max_tokens=300
-                )
+                results.append(self.validate_and_fix(item))
+            except Exception:
+                results.append(self.create_fallback_response(requests[i]))
 
-                raw_output = response.choices[0].message.content
-                parsed_dict = self.extract_json_object(raw_output)
+        return results
 
-                return self.validate_and_fix(parsed_dict)
+    # ---------------- LLM CALL ----------------
+    def call_llm(self, prompt: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "Return ONLY valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=800
+        )
+        return response.choices[0].message.content.strip()
 
-            except Exception as e:
-                print(f"Attempt {attempt + 1} failed: {e}")
-
-        return self.create_fallback_response(text)
-
-    # ---------------- JSON EXTRACTION (CRITICAL FIX) ----------------
-    def extract_json_object(self, content: str) -> Dict[str, Any]:
-        """
-        Extracts the FIRST valid JSON object and returns a dict.
-        This permanently fixes `Extra data` errors.
-        """
-
-        # Remove markdown fences if present
+    # ---------------- JSON EXTRACTION (BULLETPROOF) ----------------
+    def extract_json(self, content: str, expect_array: bool = False):
         content = re.sub(r"```json", "", content, flags=re.IGNORECASE)
-        content = re.sub(r"```", "", content)
-        content = content.strip()
+        content = re.sub(r"```", "", content).strip()
 
         decoder = json.JSONDecoder()
+        obj, _ = decoder.raw_decode(content)
 
-        try:
-            obj, _ = decoder.raw_decode(content)
-            return obj
-        except json.JSONDecodeError:
-            pass
+        if expect_array and not isinstance(obj, list):
+            raise ValueError("Expected JSON array but got object")
 
-        # Regex fallback (last resort)
-        match = re.search(r"\{[\s\S]*?\}", content)
-        if match:
-            return json.loads(match.group(0))
+        if not expect_array and not isinstance(obj, dict):
+            raise ValueError("Expected JSON object but got array")
 
-        raise ValueError("No valid JSON found")
+        return obj
 
     # ---------------- VALIDATION ----------------
     def validate_and_fix(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -127,7 +172,7 @@ Input:
         try:
             q = data.get("quantity")
             result["quantity"] = int(float(q)) if q is not None else None
-        except Exception:
+        except:
             result["quantity"] = None
 
         result["unit"] = clean(data.get("unit"))
@@ -141,13 +186,12 @@ Input:
 
         return result
 
-    def validate_date(self, value: Any) -> Optional[str]:
+    def validate_date(self, value):
         if not value:
             return None
         try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", ""))
-            return parsed.strftime("%Y-%m-%d")
-        except Exception:
+            return datetime.fromisoformat(str(value)).strftime("%Y-%m-%d")
+        except:
             return None
 
     # ---------------- FALLBACK ----------------
@@ -162,32 +206,20 @@ Input:
             "deadline": None
         }
 
-    # ---------------- BATCH ----------------
-    def process_batch(self, input_file: str, output_file: str) -> List[Dict[str, Any]]:
-        results = []
 
-        with open(input_file, "r", encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
-
-        for text in lines:
-            result = self.parse_text(text)
-            results.append({
-                "input": text,
-                "output": result
-            })
-
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
-
-        return results
-
-
-# ---------------- ENTRY ----------------
+# ---------------- EXAMPLE USAGE ----------------
 def main():
-    print("Material Request Parser (Groq)")
     parser = MaterialRequestParser()
-    parser.process_batch("test_inputs.txt", "outputs.json")
-    print("Done. Results saved to outputs.json")
+
+    text = """Create 25mm steel bars, 120 units for Project Phoenix, required before 15th March
+Need 350 bags of Ultratech Cement 50kg for the site Mumbai-West urgently in 7 days
+Order 12 truckloads of river sand for Bangalore Metro Phase 2 by April end
+get me 500 bags cement asap for highway project
+need rebar 10mm urgently"""
+
+    result = parser.parse(text)
+
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
